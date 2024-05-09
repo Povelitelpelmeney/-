@@ -1,47 +1,51 @@
-ROOT_SERVERS = ["185.228.168.9", "185.121.177.177", "45.32.230.225", "50.116.23.211",
+from __future__ import annotations
+from dnslib import A, DNSRecord, QTYPE, RR
+from typing import Union
+import json
+import socket
+import time
+
+
+class ClassDNS:
+    def __init__(self, host:str):
+        self.cache:set = {}
+        self.fetch()
+        self.socket:socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.bind((host, 53))
+        self.q_type:Union[None,str] = None
+
+    DNS_IPs = ["185.228.168.9", "185.121.177.177", "45.32.230.225", "50.116.23.211",
                     "192.203.230.10", "192.5.5.241", "192.112.36.4",
                     "198.97.190.53", "192.36.148.17", "192.58.128.30",
                     "193.0.14.129", "199.7.83.42", "202.12.27.33"]
-import json
-import socket
-from dnslib import DNSRecord, QTYPE, DNSError, RR, A
-import time
-
-class ClassDNS:
-    def __init__(self, host):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((host, 53))
-        self.q_type = None
-        self.cache = {}
-        self.fetch()
-
-    def run(self):
+    
+    def server(self) -> None:
         while True:
-            data, addr = self.sock.recvfrom(512)
+            data, addr = self.socket.recvfrom(512)
             dns_record = DNSRecord.parse(data)
             q_name = dns_record.q.qname.__str__()
             if dns_record.q.qtype != 1:
-                self.sock.sendto(data, addr)
+                self.socket.sendto(data, addr)
             elif 'multiply' in q_name:
-                self.sock.sendto(self.recieve_resp(dns_record), addr)
+                self.socket.sendto(self.recieve_resp(dns_record), addr)
             else:
                 if q_name in self.cache:
-                    reply = self.get_result_from_cache(dns_record, q_name)
+                    reply = self.get_records(dns_record, q_name)
                     if reply.a.rdata:
-                        self.sock.sendto(reply.pack(), addr)
+                        self.socket.sendto(reply.pack(), addr)
                         continue
                     else:
                         del self.cache[q_name]
                 result = None
-                for root_server in ClassDNS.ROOT_SERVERS:
+                for root_server in ClassDNS.DNS_IPs:
                     self.q_type = dns_record.q.qtype
                     result = self.lookup(dns_record, root_server)
                     if result:
                         break
-                self.cache_result(q_name, DNSRecord.parse(result))
-                self.sock.sendto(result, addr)
+                self.data_result(q_name, DNSRecord.parse(result))
+                self.socket.sendto(result, addr)
 
-    def get_result_from_cache(self, dns_record, q_name):
+    def get_records(self, dns_record:DNSRecord, q_name:str) -> DNSRecord.reply:
         reply = dns_record.reply()
         current_time = time.time()
         for answer in self.cache[q_name]:
@@ -51,7 +55,7 @@ class ClassDNS:
                 reply.add_answer(rr)
         return reply
 
-    def cache_result(self, request, result: DNSRecord):
+    def data_result(self, request:str, result: DNSRecord) -> None:
         answers = []
         for rr in result.rr:
             answers.append((rr.rdata.__str__(), rr.ttl, time.time()))
@@ -60,11 +64,11 @@ class ClassDNS:
         self.cache[request] = answers
         self.update_cache()
 
-    def update_cache(self):
+    def update_cache(self) -> None:
         with open('cache.json', 'w') as cache:
             json.dump(self.cache, cache)
 
-    def fetch(self):
+    def fetch(self) -> None:
         try:
             with open('cache.json', 'r') as cache:
                 data = json.load(cache)
@@ -73,7 +77,7 @@ class ClassDNS:
         except FileNotFoundError:
             self.update_cache()
 
-    def lookup(self, dns_record: DNSRecord, zone_ip):
+    def lookup(self, dns_record: DNSRecord, zone_ip:str) -> Union[None,bytes]:
         response = dns_record.send(zone_ip)
         parsed_response = DNSRecord.parse(response)
         for adr in parsed_response.auth:
@@ -88,7 +92,7 @@ class ClassDNS:
                 return ip
         return None
 
-    def get_new_zones_ip(self, parsed_response):
+    def get_new_zones_ip(self, parsed_response:DNSRecord) -> list:
         new_zones_ip = []
         for adr in parsed_response.ar:
             if adr.rtype == 1:
@@ -97,7 +101,7 @@ class ClassDNS:
             for adr in parsed_response.auth:
                 if adr.rtype == 2:
                     question = DNSRecord.question(adr.rdata.__repr__())
-                    pkt = self.lookup(question, ClassDNS.ROOT_SERVERS[0])
+                    pkt = self.lookup(question, ClassDNS.DNS_IPs[0])
                     parsed_pkt = DNSRecord.parse(pkt)
                     new_zone_ip = parsed_pkt.a.rdata.__repr__()
                     if new_zone_ip:
@@ -105,20 +109,20 @@ class ClassDNS:
         return new_zones_ip
 
     def recieve_resp(self, dns_record: DNSRecord):
-        mult = 0
         name = dns_record.q.qname.__str__()
         index = name.find('multiply')
         zones = name[:index].split('.')
+        sch = 0
         for zone in zones:
             try:
                 number = int(zone)
-                if mult == 0:
-                    mult = 1
-                mult *= number
+                if sch == 0:
+                    sch = 1
+                sch *= number
             except ValueError:
                 continue
-        mult %= 256
-        reply_ip = f'127.0.0.{mult}'
+        sch %= 256
+        reply_ip = f'127.0.0.{sch}'
         reply = dns_record.reply()
         reply.add_answer(RR(dns_record.q.qname, QTYPE.A,
                             rdata=A(reply_ip), ttl=60))
@@ -126,4 +130,4 @@ class ClassDNS:
 
 
 if __name__ == "__main__":
-    ClassDNS('127.0.0.1').run()
+    ClassDNS('127.0.0.1').server()
